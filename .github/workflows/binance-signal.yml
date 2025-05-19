@@ -2,26 +2,27 @@ name: Binance Signal Bot
 
 on:
   schedule:
-    - cron: '0 * * * *'  # 每小时执行一次
+    - cron: '*/30 * * * *' # 每30分钟执行
   workflow_dispatch:
 
 jobs:
   run:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
+    - name: Checkout code
+      uses: actions/checkout@v3
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
 
-      - name: Install dependencies
-        run: pip install requests
+    - name: Install dependencies
+      run: pip install -r requirements.txt
 
-      - name: Run script
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: python binance_signal_bot.py
+    - name: Run bot
+      env:
+        BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        CHAT_ID: ${{ secrets.CHAT_ID }}
+      run: python binance_signal_bot.py
