@@ -1,153 +1,83 @@
 import os
-import time
 import requests
-import schedule
-from telegram import Bot
-from dotenv import load_dotenv
 import matplotlib.pyplot as plt
+from io import BytesIO
+import telegram
 import pandas as pd
-import mplfinance as mpf
-from datetime import datetime
-
-load_dotenv()
+import time
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
-SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT"]
+if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    raise Exception("请设置 TELEGRAM_BOT_TOKEN 和 TELEGRAM_CHAT_ID 环境变量")
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; BinanceBot/1.0; +https://github.com/yourrepo)"
-}
+bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
+HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 def request_with_retry(url, max_retries=3, timeout=10):
-    for attempt in range(max_retries):
+    for i in range(max_retries):
         try:
             resp = requests.get(url, headers=HEADERS, timeout=timeout)
             resp.raise_for_status()
             return resp.json()
-        except requests.RequestException as e:
-            print(f"请求 {url} 失败，尝试重试 {attempt+1}/{max_retries}: {e}")
+        except Exception as e:
+            print(f"请求失败，重试 {i+1}/{max_retries}，错误: {e}")
             time.sleep(2)
-    print(f"请求 {url} 多次失败，跳过。")
+    print("请求多次失败，放弃")
     return None
 
-def get_futures_data():
-    url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
+def get_spot_data():
+    url = "https://api.binance.com/api/v3/ticker/24hr"
     data = request_with_retry(url)
     if data is None:
-        return []
-    return [item for item in data if item['symbol'].endswith("USDT")]
+        return pd.DataFrame(), pd.DataFrame()
 
-def get_top_10_volume(data):
-    sorted_pairs = sorted(data, key=lambda x: float(x['quoteVolume']), reverse=True)
-    return sorted_pairs[:10]
+    df = pd.DataFrame(data)
+    df = df[df['symbol'].str.endswith("USDT")]
 
-def get_gainers_losers(data, limit=10):
-    sorted_up = sorted(data, key=lambda x: float(x["priceChangePercent"]), reverse=True)[:limit]
-    sorted_down = sorted(data, key=lambda x: float(x["priceChangePercent"]))[:limit]
-    gainers = [(item["symbol"], float(item["priceChangePercent"])) for item in sorted_up]
-    losers = [(item["symbol"], float(item["priceChangePercent"])) for item in sorted_down]
+    df['priceChangePercent'] = pd.to_numeric(df['priceChangePercent'], errors='coerce')
+
+    gainers = df.sort_values(by='priceChangePercent', ascending=False).head(10)
+    losers = df.sort_values(by='priceChangePercent').head(10)
     return gainers, losers
 
-def draw_volume_chart(top10, filename='top10_volume.png'):
-    symbols = [item['symbol'] for item in top10]
-    volumes = [float(item['quoteVolume']) for item in top10]
-
+def plot_top_movers(gainers, losers):
     plt.figure(figsize=(12,6))
-    bars = plt.bar(symbols, volumes, color='dodgerblue')
-    plt.title('币安USDT合约成交额Top10')
-    plt.xlabel('合约对')
-    plt.ylabel('24h成交额(USDT)')
+    plt.bar(gainers['symbol'], gainers['priceChangePercent'], color='green', label='涨幅榜Top10')
+    plt.bar(losers['symbol'], losers['priceChangePercent'], color='red', label='跌幅榜Top10')
+    plt.axhline(0, color='black', linewidth=0.8)
+    plt.ylabel('24小时涨跌幅 (%)')
+    plt.title('币安现货USDT交易对涨跌榜Top10')
     plt.xticks(rotation=45)
-    for bar, vol in zip(bars, volumes):
-        plt.text(bar.get_x() + bar.get_width()/2, bar.get_height(), f'{vol/1e9:.2f}B', ha='center', va='bottom')
+    plt.legend()
     plt.tight_layout()
-    plt.savefig(filename)
+    buf = BytesIO()
+    plt.savefig(buf, format='png')
     plt.close()
-
-def draw_gainers_losers_chart(gainers, losers, filename='gainers_losers.png'):
-    fig, ax = plt.subplots(figsize=(12,6))
-    if gainers and losers:
-        symbols_up, values_up = zip(*gainers)
-        symbols_down, values_down = zip(*losers)
-        ax.barh(symbols_up[::-1], values_up[::-1], color='green', label='涨幅Top10')
-        ax.barh(symbols_down[::-1], values_down[::-1], color='red', label='跌幅Top10')
-    ax.set_title('📊 涨跌幅排行榜（过去24小时）')
-    ax.set_xlabel('涨跌幅 %')
-    ax.legend()
-    plt.tight_layout()
-    plt.savefig(filename)
-    plt.close()
-
-def get_kline_data(symbol="BTCUSDT", interval="1h", limit=24):
-    url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    data = request_with_retry(url)
-    return data if data else []
-
-def draw_kline_chart(data, symbol, filename):
-    if not data:
-        print(f"{symbol} K线数据为空，跳过绘制。")
-        return
-    df = pd.DataFrame(data, columns=[
-        "open_time", "open", "high", "low", "close", "volume", 
-        "close_time", "quote_asset_volume", "number_of_trades",
-        "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume", "ignore"
-    ])
-    df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
-    df.set_index('open_time', inplace=True)
-    df = df.astype(float)
-
-    mc = mpf.make_marketcolors(up='r', down='g', inherit=True)
-    s = mpf.make_mpf_style(marketcolors=mc)
-
-    mpf.plot(df[['open', 'high', 'low', 'close']], type='candle', style=s, 
-             title=f"{symbol} 近24小时K线图", 
-             ylabel='价格(USDT)', savefig=filename)
+    buf.seek(0)
+    return buf
 
 def send_to_telegram():
-    all_data = get_futures_data()
-    if not all_data:
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text="❌ 获取币安合约数据失败，请检查网络或API限制。")
+    gainers, losers = get_spot_data()
+    if gainers.empty or losers.empty:
+        msg = "❌ 获取币安现货行情失败，请检查网络或API限制。"
+        print(msg)
+        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
         return
 
-    top10 = get_top_10_volume(all_data)
-    gainers, losers = get_gainers_losers(all_data)
+    msg = "📈 币安现货USDT交易对涨跌榜Top10\n\n"
+    msg += "🚀 涨幅榜Top10:\n"
+    for _, row in gainers.iterrows():
+        msg += f"{row['symbol']}: {row['priceChangePercent']:.2f}%\n"
 
-    draw_volume_chart(top10)
-    draw_gainers_losers_chart(gainers, losers)
+    msg += "\n📉 跌幅榜Top10:\n"
+    for _, row in losers.iterrows():
+        msg += f"{row['symbol']}: {row['priceChangePercent']:.2f}%\n"
 
-    msg = "📈 [币安USDT合约热门榜Top10]\n\n"
-    for i, item in enumerate(top10, 1):
-        msg += f"{i}. {item['symbol']} 成交额: {float(item['quoteVolume']):,.0f} USDT 最新价: {item['lastPrice']}\n"
-
-    try:
-        with open("top10_volume.png", "rb") as f1, open("gainers_losers.png", "rb") as f2:
-            bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=f1, caption=msg)
-            bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=f2, caption="📊 涨跌幅排行榜")
-    except Exception as e:
-        print(f"发送图表失败: {e}")
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text="⚠️ 发送图表失败，请检查机器人权限。")
-
-    for symbol in SYMBOLS:
-        try:
-            kline = get_kline_data(symbol)
-            filename = f"kline_{symbol}.png"
-            draw_kline_chart(kline, symbol, filename)
-            with open(filename, "rb") as img:
-                bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=img, caption=f"🕯️ {symbol} 近24小时K线图")
-        except Exception as e:
-            print(f"获取或绘制 {symbol} K线失败: {e}")
-            bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"⚠️ 获取或绘制 {symbol} K线失败: {e}")
+    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+    img_buf = plot_top_movers(gainers, losers)
+    bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=img_buf)
 
 if __name__ == "__main__":
-    if os.getenv("ONCE") == "1":
-        send_to_telegram()
-    else:
-        schedule.every().hour.do(send_to_telegram)
-        print("🤖 机器人启动，每小时运行一次")
-        send_to_telegram()
-        while True:
-            schedule.run_pending()
-            time.sleep(10)
+    send_to_telegram()
