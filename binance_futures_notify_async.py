@@ -15,12 +15,33 @@ async def send_telegram_message(session, text):
         "text": text,
         "parse_mode": "Markdown"
     }
-    async with session.post(url, data=data) as resp:
-        return await resp.json()
+    try:
+        async with session.post(url, data=data) as resp:
+            resp_json = await resp.json()
+            if not resp_json.get("ok", True):
+                print("Telegram接口返回异常:", resp_json)
+            return resp_json
+    except Exception as e:
+        print("发送Telegram消息异常:", e)
+        return None
 
 async def get_futures_tickers(session):
-    async with session.get(BINANCE_FUTURES_API) as resp:
-        return await resp.json()
+    try:
+        async with session.get(BINANCE_FUTURES_API) as resp:
+            text = await resp.text()
+            try:
+                data = await resp.json()
+            except Exception:
+                print("接口返回非JSON格式:", text)
+                return []
+            if isinstance(data, list):
+                return data
+            else:
+                print("接口返回数据格式异常:", data)
+                return []
+    except Exception as e:
+        print("请求币安合约行情接口失败:", e)
+        return []
 
 async def get_order_book(session, symbol, limit=50):
     params = {'symbol': symbol, 'limit': limit}
@@ -28,18 +49,25 @@ async def get_order_book(session, symbol, limit=50):
         async with session.get(DEPTH_API, params=params) as resp:
             if resp.status == 200:
                 return await resp.json()
-    except:
-        pass
-    return None
+            else:
+                print(f"请求盘口深度失败 {symbol}: 状态码{resp.status}")
+                return None
+    except Exception as e:
+        print(f"请求盘口深度异常 {symbol}:", e)
+        return None
 
 async def main():
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("请设置环境变量 TELEGRAM_BOT_TOKEN 和 TELEGRAM_CHAT_ID")
+        return
+
     async with aiohttp.ClientSession() as session:
         tickers = await get_futures_tickers(session)
         if not tickers:
-            print("获取合约行情失败")
+            print("获取合约行情失败或为空，程序退出")
             return
-        
-        sorted_by_change = sorted(tickers, key=lambda x: float(x['priceChangePercent']), reverse=True)
+
+        sorted_by_change = sorted(tickers, key=lambda x: float(x.get('priceChangePercent', 0)), reverse=True)
         top10_up = sorted_by_change[:10]
         top10_down = sorted_by_change[-10:]
 
