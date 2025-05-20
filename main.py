@@ -1,123 +1,99 @@
-import os
 import requests
-import matplotlib.pyplot as plt
-from io import BytesIO
-import telegram
 import pandas as pd
-import time
+import logging
+from telegram import Bot
+from datetime import datetime
+import os
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# === 环境变量从 GitHub Secrets 读取 ===
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-    raise Exception("请设置 TELEGRAM_BOT_TOKEN 和 TELEGRAM_CHAT_ID 环境变量")
+# === 日志设置 ===
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=TELEGRAM_TOKEN)
 
-bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
-HEADERS = {"User-Agent": "Mozilla/5.0"}
+# === 获取数据函数 ===
 
-def request_with_retry(url, max_retries=3, timeout=10):
-    for i in range(max_retries):
-        try:
-            resp = requests.get(url, headers=HEADERS, timeout=timeout)
-            print(f"请求状态码: {resp.status_code} 网址: {url}")
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            print(f"请求失败，重试 {i+1}/{max_retries}，错误: {e}")
-            time.sleep(2)
-    print("请求多次失败，放弃")
-    return None
+def get_binance_data(url):
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        df = pd.DataFrame(data)
+        df = df[df['symbol'].str.endswith('USDT')]
+        df['priceChangePercent'] = pd.to_numeric(df['priceChangePercent'], errors='coerce')
+        df['lastPrice'] = pd.to_numeric(df['lastPrice'], errors='coerce')
+        df = df.dropna(subset=['priceChangePercent', 'lastPrice'])
+        return df
+    except Exception as e:
+        logging.error(f"❌ 获取数据失败: {e}")
+        return pd.DataFrame()
 
 def get_spot_data():
-    url = "https://api.binance.com/api/v3/ticker/24hr"
-    data = request_with_retry(url)
-    if data is None:
-        return pd.DataFrame(), pd.DataFrame()
-
-    df = pd.DataFrame(data)
-    df = df[df['symbol'].str.endswith("USDT")]
-    df['priceChangePercent'] = pd.to_numeric(df['priceChangePercent'], errors='coerce')
-
-    gainers = df.sort_values(by='priceChangePercent', ascending=False).head(10)
-    losers = df.sort_values(by='priceChangePercent').head(10)
-    return gainers, losers
+    return get_binance_data("https://api.binance.com/api/v3/ticker/24hr")
 
 def get_futures_data():
-    url = "https://fapi.binance.com/fapi/v1/ticker/24hr"
-    data = request_with_retry(url)
-    if data is None:
-        return pd.DataFrame(), pd.DataFrame()
+    return get_binance_data("https://fapi.binance.com/fapi/v1/ticker/24hr")
 
-    df = pd.DataFrame(data)
-    df = df[df['symbol'].str.endswith("USDT")]
-    df['priceChangePercent'] = pd.to_numeric(df['priceChangePercent'], errors='coerce')
-
-    gainers = df.sort_values(by='priceChangePercent', ascending=False).head(10)
-    losers = df.sort_values(by='priceChangePercent').head(10)
+def get_top_movers(df, top_n=10):
+    gainers = df.sort_values("priceChangePercent", ascending=False).head(top_n)
+    losers = df.sort_values("priceChangePercent").head(top_n)
     return gainers, losers
 
-def plot_two_charts(spot_gainers, spot_losers, fut_gainers, fut_losers):
-    fig, axs = plt.subplots(2, 1, figsize=(14, 10))
-    
-    # 现货涨跌幅图
-    axs[0].bar(spot_gainers['symbol'], spot_gainers['priceChangePercent'], color='green', label='现货涨幅Top10')
-    axs[0].bar(spot_losers['symbol'], spot_losers['priceChangePercent'], color='red', label='现货跌幅Top10')
-    axs[0].axhline(0, color='black', linewidth=0.8)
-    axs[0].set_title("币安现货USDT交易对涨跌榜Top10")
-    axs[0].set_ylabel("涨跌幅 (%)")
-    axs[0].legend()
-    axs[0].tick_params(axis='x', rotation=45)
-    
-    # 合约涨跌幅图
-    axs[1].bar(fut_gainers['symbol'], fut_gainers['priceChangePercent'], color='green', label='合约涨幅Top10')
-    axs[1].bar(fut_losers['symbol'], fut_losers['priceChangePercent'], color='red', label='合约跌幅Top10')
-    axs[1].axhline(0, color='black', linewidth=0.8)
-    axs[1].set_title("币安永续合约USDT交易对涨跌榜Top10")
-    axs[1].set_ylabel("涨跌幅 (%)")
-    axs[1].legend()
-    axs[1].tick_params(axis='x', rotation=45)
+def format_side_by_side(left_df, right_df, left_title, right_title):
+    result = f"🔹 {left_title:<28} | 🔸 {right_title}\n"
+    result += f"{'-'*30}|{'-'*30}\n"
+    for i in range(max(len(left_df), len(right_df))):
+        l = left_df.iloc[i] if i < len(left_df) else None
+        r = right_df.iloc[i] if i < len(right_df) else None
+        left_row = f"{l['symbol']:<10} {l['priceChangePercent']:>+6.2f}% ${l['lastPrice']:.4g}" if l is not None else ""
+        right_row = f"{r['symbol']:<10} {r['priceChangePercent']:>+6.2f}% ${r['lastPrice']:.4g}" if r is not None else ""
+        result += f"{left_row:<30}| {right_row}\n"
+    return result
 
-    plt.tight_layout()
+def format_anomaly_list(spot_df, fut_df):
+    combined = pd.concat([spot_df, fut_df])
+    combined['priceChangePercent'] = pd.to_numeric(combined['priceChangePercent'], errors='coerce')
+    combined['lastPrice'] = pd.to_numeric(combined['lastPrice'], errors='coerce')
 
-    buf = BytesIO()
-    plt.savefig(buf, format='png')
-    plt.close()
-    buf.seek(0)
-    return buf
+    gainers = combined[combined['priceChangePercent'] >= 100]
+    losers = combined[combined['priceChangePercent'] <= -60]
+
+    result = ""
+    if not gainers.empty or not losers.empty:
+        result += "🚨 *异动榜（涨幅 ≥ +100%，跌幅 ≤ -60%）*\n"
+        result += "```\n"
+        for _, row in gainers.iterrows():
+            result += f"🚀 {row['symbol']:<10} {row['priceChangePercent']:>+6.2f}% ${row['lastPrice']:.4g}\n"
+        for _, row in losers.iterrows():
+            result += f"🔻 {row['symbol']:<10} {row['priceChangePercent']:>+6.2f}% ${row['lastPrice']:.4g}\n"
+        result += "```\n\n"
+    return result
 
 def send_to_telegram():
-    spot_gainers, spot_losers = get_spot_data()
-    fut_gainers, fut_losers = get_futures_data()
+    spot = get_spot_data()
+    fut = get_futures_data()
 
-    if spot_gainers.empty or spot_losers.empty:
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text="❌ 获取币安现货行情失败，请检查网络或API限制。")
-        return
-    if fut_gainers.empty or fut_losers.empty:
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text="❌ 获取币安合约行情失败，请检查网络或API限制。")
+    if spot.empty or fut.empty:
+        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text="❌ 获取币安行情失败，请检查网络或API限制。")
         return
 
-    msg = "📈 币安现货USDT交易对涨跌榜Top10\n"
-    msg += "🚀 涨幅榜:\n"
-    for _, row in spot_gainers.iterrows():
-        msg += f"{row['symbol']}: {row['priceChangePercent']:.2f}%\n"
+    spot_gainers, spot_losers = get_top_movers(spot)
+    fut_gainers, fut_losers = get_top_movers(fut)
 
-    msg += "\n📉 跌幅榜:\n"
-    for _, row in spot_losers.iterrows():
-        msg += f"{row['symbol']}: {row['priceChangePercent']:.2f}%\n"
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
-    msg += "\n\n🔥 币安永续合约USDT交易对涨跌榜Top10\n"
-    msg += "🚀 涨幅榜:\n"
-    for _, row in fut_gainers.iterrows():
-        msg += f"{row['symbol']}: {row['priceChangePercent']:.2f}%\n"
+    msg = "📊 *币安 24H 涨跌榜（USDT）*\n\n"
+    msg += format_anomaly_list(spot, fut)
+    msg += "```text\n"
+    msg += format_side_by_side(spot_gainers, fut_gainers, "现货涨幅榜", "合约涨幅榜")
+    msg += "\n"
+    msg += format_side_by_side(spot_losers, fut_losers, "现货跌幅榜", "合约跌幅榜")
+    msg += "```\n"
+    msg += f"📅 更新时间：{now}"
 
-    msg += "\n📉 跌幅榜:\n"
-    for _, row in fut_losers.iterrows():
-        msg += f"{row['symbol']}: {row['priceChangePercent']:.2f}%\n"
-
-    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
-
-    img_buf = plot_two_charts(spot_gainers, spot_losers, fut_gainers, fut_losers)
-    bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=img_buf)
+    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode='Markdown')
 
 if __name__ == "__main__":
     send_to_telegram()
