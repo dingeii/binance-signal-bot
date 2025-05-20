@@ -1,4 +1,4 @@
-name: Binance Bot Scheduled Run
+name: Binance Bot Run
 
 on:
   schedule:
