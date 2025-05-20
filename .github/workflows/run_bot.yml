@@ -2,23 +2,24 @@ name: Binance Bot Scheduled Run
 
 on:
   schedule:
-    - cron: '0 * * * *'  # 每小时0分运行（UTC），对应北京时间整点运行
+    - cron: '0 * * * *'   # 每小时第0分钟运行，UTC时间
+  workflow_dispatch:      # 支持手动触发
 
 jobs:
   run:
     runs-on: ubuntu-latest
     env:
-      TZ: Asia/Shanghai  # 设置时区为北京时间
+      TZ: Asia/Shanghai
 
     steps:
       - uses: actions/checkout@v3
-      - name: Setup Python
+      - name: Setup Python 3.9
         uses: actions/setup-python@v4
         with:
           python-version: 3.9
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Run bot
+      - name: Run Binance Telegram Bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
