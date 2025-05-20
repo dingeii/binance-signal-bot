@@ -5,3 +5,7 @@ python-dotenv
 matplotlib
 pandas
 mplfinance
+python-telegram-bot==20.3
+requests
+pandas
+pytz
