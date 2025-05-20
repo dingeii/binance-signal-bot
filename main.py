@@ -6,7 +6,7 @@ from datetime import datetime
 import os
 
 # === 环境变量从 GitHub Secrets 读取 ===
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # === 日志设置 ===
