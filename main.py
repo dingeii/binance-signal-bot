@@ -45,13 +45,11 @@ def get_futures_data():
     df['lastPrice'] = df['lastPrice'].astype(float)
     return df
 
-def format_table(df, title):
-    lines = [f"{title}\n{'-'*24}"]
-    for i, row in df.iterrows():
-        # 格式: SYMBOL   +xx.xx%   $price
+def format_table(df):
+    lines = []
+    for _, row in df.iterrows():
         sign = '+' if row['priceChangePercent'] >= 0 else ''
-        line = f"{row['symbol']:<10} {sign}{row['priceChangePercent']:>6.2f}% ${row['lastPrice']:.4g}"
-        lines.append(line)
+        lines.append(f"{row['symbol']:<12} {sign}{row['priceChangePercent']:>6.2f}%   ${row['lastPrice']:.4g}")
     return "\n".join(lines)
 
 def send_to_telegram():
@@ -71,27 +69,11 @@ def send_to_telegram():
 
     msg = "📊 *币安 24H 涨跌榜（USDT）*\n\n"
 
-    # 现货涨跌榜
-    msg += "🔸 现货涨幅榜\n"
-    msg += "```text\n"
-    msg += format_table(spot_gainers, "")
-    msg += "\n```\n"
+    msg += "🔸 *现货涨幅榜*\n```text\n" + format_table(spot_gainers) + "\n```\n"
+    msg += "🔸 *现货跌幅榜*\n```text\n" + format_table(spot_losers) + "\n```\n"
 
-    msg += "🔸 现货跌幅榜\n"
-    msg += "```text\n"
-    msg += format_table(spot_losers, "")
-    msg += "\n```\n"
-
-    # 合约涨跌榜
-    msg += "🔸 合约涨幅榜\n"
-    msg += "```text\n"
-    msg += format_table(fut_gainers, "")
-    msg += "\n```\n"
-
-    msg += "🔸 合约跌幅榜\n"
-    msg += "```text\n"
-    msg += format_table(fut_losers, "")
-    msg += "\n```\n"
+    msg += "🔸 *合约涨幅榜*\n```text\n" + format_table(fut_gainers) + "\n```\n"
+    msg += "🔸 *合约跌幅榜*\n```text\n" + format_table(fut_losers) + "\n```\n"
 
     msg += f"📅 更新时间：{now}"
 
