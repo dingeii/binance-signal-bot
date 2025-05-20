@@ -4,7 +4,6 @@ import pandas as pd
 from telegram import Bot
 from datetime import datetime, timedelta
 
-# 读取环境变量
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
