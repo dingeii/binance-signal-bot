@@ -22,12 +22,10 @@ def fetch_okx_data(inst_type):
     return data['data']
 
 def process_data(data):
-    # 转DataFrame，筛选USDT交易对
     df = pd.DataFrame(data)
     df = df[df['instId'].str.endswith('USDT')]
-    # 转换价格和涨跌幅数据
     df['last'] = pd.to_numeric(df['last'], errors='coerce')
-    df['priceChangePercent'] = pd.to_numeric(df['pctChange'], errors='coerce')
+    df['priceChangePercent'] = pd.to_numeric(df['changeRate'], errors='coerce') * 100  # 小数转百分比
     return df.dropna(subset=['priceChangePercent', 'last'])
 
 def format_table(df):
