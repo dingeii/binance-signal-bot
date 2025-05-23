@@ -25,7 +25,17 @@ def process_data(data):
     df = pd.DataFrame(data)
     df = df[df['instId'].str.endswith('USDT')]
     df['last'] = pd.to_numeric(df['last'], errors='coerce')
-    df['priceChangePercent'] = pd.to_numeric(df['changeRate'], errors='coerce') * 100  # 小数转百分比
+
+    # 兼容不同涨跌幅字段名
+    if 'changeRate' in df.columns:
+        df['priceChangePercent'] = pd.to_numeric(df['changeRate'], errors='coerce') * 100
+    elif 'change24h' in df.columns:
+        df['priceChangePercent'] = pd.to_numeric(df['change24h'], errors='coerce') * 100
+    elif 'priceChangePercent' in df.columns:
+        df['priceChangePercent'] = pd.to_numeric(df['priceChangePercent'], errors='coerce')
+    else:
+        raise RuntimeError("行情数据中未找到涨跌幅字段")
+
     return df.dropna(subset=['priceChangePercent', 'last'])
 
 def format_table(df):
