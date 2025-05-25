@@ -1,67 +1,102 @@
+import asyncio
+import aiohttp
+from tabulate import tabulate
 import os
-import requests
-import pandas as pd
-from telegram import Bot
-from datetime import datetime, timedelta
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-    raise ValueError("请先设置 TELEGRAM_BOT_TOKEN 和 TELEGRAM_CHAT_ID 环境变量")
+BINANCE_SPOT_API = "https://binance.vision/api/v3/ticker/24hr"
+BINANCE_FUTURES_API = "https://binance.vision/fapi/v1/ticker/24hr"
 
-bot = Bot(token=TELEGRAM_TOKEN)
+def highlight(text, condition):
+    if condition:
+        return f"\033[91m🔻{text}\033[0m" if text.startswith('-') else f"\033[92m🔺{text}\033[0m"
+    return text
 
-def fetch_binance_data(endpoint):
-    url = f"https://api.binance.com/api/v3/ticker/24hr" if endpoint == "spot" else f"https://fapi.binance.com/fapi/v1/ticker/24hr"
-    resp = requests.get(url, timeout=10)
-    resp.raise_for_status()
-    return resp.json()
-
-def process_data(data):
-    df = pd.DataFrame(data)
-    df = df[df['symbol'].str.endswith('USDT')]
-    df['lastPrice'] = pd.to_numeric(df['lastPrice'], errors='coerce')
-    df['priceChangePercent'] = pd.to_numeric(df['priceChangePercent'], errors='coerce')
-    return df.dropna(subset=['priceChangePercent', 'lastPrice'])
-
-def format_table(df):
-    lines = []
-    for _, row in df.iterrows():
-        sign = '+' if row['priceChangePercent'] >= 0 else ''
-        lines.append(f"{row['symbol']:<12} {sign}{row['priceChangePercent']:6.2f}%  ${row['lastPrice']:.4g}")
-    return "\n".join(lines)
-
-def send_to_telegram():
+async def send_telegram_alert(session, message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram 配置缺失，跳过推送")
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
     try:
-        spot_data = fetch_binance_data("spot")
-        fut_data = fetch_binance_data("futures")
-
-        spot_df = process_data(spot_data)
-        fut_df = process_data(fut_data)
-
-        spot_gainers = spot_df.sort_values("priceChangePercent", ascending=False).head(10)
-        spot_losers = spot_df.sort_values("priceChangePercent").head(10)
-        fut_gainers = fut_df.sort_values("priceChangePercent", ascending=False).head(10)
-        fut_losers = fut_df.sort_values("priceChangePercent").head(10)
-
-        now = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M (UTC+8)")
-
-        msg = "📊 *Binance 24H 涨跌榜（USDT）*\n\n"
-        msg += "🔸 *现货涨幅榜*\n```text\n" + format_table(spot_gainers) + "\n```\n"
-        msg += "🔸 *现货跌幅榜*\n```text\n" + format_table(spot_losers) + "\n```\n"
-        msg += "🔸 *合约涨幅榜*\n```text\n" + format_table(fut_gainers) + "\n```\n"
-        msg += "🔸 *合约跌幅榜*\n```text\n" + format_table(fut_losers) + "\n```\n"
-        msg += f"📅 更新时间：{now}"
-
+        async with session.post(url, json=payload) as resp:
+            await resp.text()
     except Exception as e:
-        msg = f"❌ 获取行情失败：{e}"
+        print("Telegram 推送失败:", e)
 
-    try:
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode='Markdown')
-        print("✅ Telegram 消息发送成功")
-    except Exception as e:
-        print(f"❌ Telegram 发送消息失败: {e}")
+async def fetch_spot(session):
+    async with session.get(BINANCE_SPOT_API) as resp:
+        return await resp.json()
+
+async def fetch_futures(session):
+    async with session.get(BINANCE_FUTURES_API) as resp:
+        return await resp.json()
+
+def process_market(data):
+    if not isinstance(data, list):
+        print("返回数据格式异常:", data)
+        return [], []
+    filtered = [d for d in data if d["symbol"].endswith("USDT")]
+    for d in filtered:
+        d["priceChangePercent"] = float(d["priceChangePercent"])
+    top_gainers = sorted(filtered, key=lambda x: x["priceChangePercent"], reverse=True)[:10]
+    top_losers = sorted(filtered, key=lambda x: x["priceChangePercent"])[:10]
+    return top_gainers, top_losers
+
+def format_table(title, entries):
+    print(f"\n{title}")
+    table = []
+    alerts = []
+    for item in entries:
+        percent = item["priceChangePercent"]
+        percent_str = f"{percent:.2f}%"
+        last_price = item.get("lastPrice", "-")
+        symbol = item["symbol"]
+        high_movement = percent >= 100 or percent <= -60
+        table.append([symbol, last_price, highlight(percent_str, high_movement)])
+        if high_movement:
+            direction = "📈 *暴涨*" if percent >= 100 else "📉 *暴跌*"
+            alerts.append(
+                f"{direction}\n"
+                f"📊 *{symbol}*\n"
+                f"💱 当前价格：`{last_price}`\n"
+                f"📉 24h变动：*{percent:.2f}%*\n"
+                f"来源：*{title}*\n"
+                f"--------------------------"
+            )
+    print(tabulate(table, headers=["Symbol", "Last Price", "24h Change"], tablefmt="pretty"))
+    return alerts
+
+async def monitor():
+    async with aiohttp.ClientSession() as session:
+        spot_data, futures_data = await asyncio.gather(
+            fetch_spot(session),
+            fetch_futures(session)
+        )
+
+        spot_gainers, spot_losers = process_market(spot_data)
+        futures_gainers, futures_losers = process_market(futures_data)
+
+        alerts = []
+        alerts += format_table("📈 Spot Gainers", spot_gainers)
+        alerts += format_table("📉 Spot Losers", spot_losers)
+        alerts += format_table("📈 Futures Gainers", futures_gainers)
+        alerts += format_table("📉 Futures Losers", futures_losers)
+
+        if alerts:
+            message = "\n".join(alerts)
+            await send_telegram_alert(session, message)
+        else:
+            print("无显著价格变动，未推送")
+
+async def main():
+    await monitor()
 
 if __name__ == "__main__":
-    send_to_telegram()
+    asyncio.run(main())
