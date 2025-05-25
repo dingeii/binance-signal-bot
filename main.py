@@ -12,43 +12,31 @@ if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-def fetch_okx_data(inst_type):
-    url = f"https://www.okx.com/api/v5/market/tickers?instType={inst_type}"
+def fetch_binance_data(endpoint):
+    url = f"https://api.binance.com/api/v3/ticker/24hr" if endpoint == "spot" else f"https://fapi.binance.com/fapi/v1/ticker/24hr"
     resp = requests.get(url, timeout=10)
     resp.raise_for_status()
-    data = resp.json()
-    if data['code'] != '0':
-        raise RuntimeError(f"OKX API 错误: {data['msg']}")
-    return data['data']
+    return resp.json()
 
 def process_data(data):
     df = pd.DataFrame(data)
-    df = df[df['instId'].str.endswith('USDT')]
-    df['last'] = pd.to_numeric(df['last'], errors='coerce')
-
-    # 兼容不同涨跌幅字段名
-    if 'changeRate' in df.columns:
-        df['priceChangePercent'] = pd.to_numeric(df['changeRate'], errors='coerce') * 100
-    elif 'change24h' in df.columns:
-        df['priceChangePercent'] = pd.to_numeric(df['change24h'], errors='coerce') * 100
-    elif 'priceChangePercent' in df.columns:
-        df['priceChangePercent'] = pd.to_numeric(df['priceChangePercent'], errors='coerce')
-    else:
-        raise RuntimeError("行情数据中未找到涨跌幅字段")
-
-    return df.dropna(subset=['priceChangePercent', 'last'])
+    df = df[df['symbol'].str.endswith('USDT')]
+    df['lastPrice'] = pd.to_numeric(df['lastPrice'], errors='coerce')
+    df['priceChangePercent'] = pd.to_numeric(df['priceChangePercent'], errors='coerce')
+    return df.dropna(subset=['priceChangePercent', 'lastPrice'])
 
 def format_table(df):
     lines = []
     for _, row in df.iterrows():
         sign = '+' if row['priceChangePercent'] >= 0 else ''
-        lines.append(f"{row['instId']:<15} {sign}{row['priceChangePercent']:6.2f}%  ${row['last']:.4g}")
+        lines.append(f"{row['symbol']:<12} {sign}{row['priceChangePercent']:6.2f}%  ${row['lastPrice']:.4g}")
     return "\n".join(lines)
 
 def send_to_telegram():
     try:
-        spot_data = fetch_okx_data("SPOT")
-        fut_data = fetch_okx_data("FUTURES")
+        spot_data = fetch_binance_data("spot")
+        fut_data = fetch_binance_data("futures")
+
         spot_df = process_data(spot_data)
         fut_df = process_data(fut_data)
 
@@ -59,7 +47,7 @@ def send_to_telegram():
 
         now = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M (UTC+8)")
 
-        msg = "📊 *OKX 24H 涨跌榜（USDT）*\n\n"
+        msg = "📊 *Binance 24H 涨跌榜（USDT）*\n\n"
         msg += "🔸 *现货涨幅榜*\n```text\n" + format_table(spot_gainers) + "\n```\n"
         msg += "🔸 *现货跌幅榜*\n```text\n" + format_table(spot_losers) + "\n```\n"
         msg += "🔸 *合约涨幅榜*\n```text\n" + format_table(fut_gainers) + "\n```\n"
@@ -69,7 +57,11 @@ def send_to_telegram():
     except Exception as e:
         msg = f"❌ 获取行情失败：{e}"
 
-    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode='Markdown')
+    try:
+        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode='Markdown')
+        print("✅ Telegram 消息发送成功")
+    except Exception as e:
+        print(f"❌ Telegram 发送消息失败: {e}")
 
 if __name__ == "__main__":
     send_to_telegram()
